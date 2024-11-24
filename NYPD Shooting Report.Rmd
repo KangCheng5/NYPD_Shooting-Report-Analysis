@@ -1,0 +1,127 @@
+---
+title: "NYPD Shooting Report"
+author: "K.C"
+date: "2024-11-17"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Obtaining and tidying the data
+
+Loading necessary package
+```{r load allowed package}
+library(tidyverse)
+```
+
+Starts by reading in the data from the csv file.
+```{r reads data}
+url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd_shooting <- read.csv(url)
+```
+
+After looking at the data, to perform cleaning by removing unnecessary columns that aren't usable to my analysis, for example, x and y coordinates, latitude and longitude, etc.
+Some columns were also renamed to be more R friendly.
+
+```{r rename & exclude, echo=FALSE}
+# Clean and save the data to nypd_shooting1
+nypd_shooting1 <- 
+  nypd_shooting %>% rename(CITY = BORO, LOC_OCCUR = LOC_OF_OCCUR_DESC, LOC_CLASS = LOC_CLASSFCTN_DESC, MURDER_FLAG = STATISTICAL_MURDER_FLAG) %>% select(-c(X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat, INCIDENT_KEY, JURISDICTION_CODE))
+```
+
+Next, the datatype of a column named 'OCCUR_DATE' was converted from 'chr' to 'date' and same for 'OCCUR_TIME'.
+
+```{r time % datetype conversion}
+# Convert and save to nypd_shooting2
+nypd_shooting2 <- nypd_shooting1 %>% mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+nypd_shooting2$OCCUR_TIME <- hms::as_hms(nypd_shooting2$OCCUR_TIME)
+```
+
+Lastly, a summary of the nypd shooting data was shown after cleaning
+```{r tidied version}
+summary(nypd_shooting2)
+```
+
+
+## 3 visualizations
+
+First, showing the number of cases by each date in the first half of year 2015.
+
+```{r visualization 1, echo=FALSE}
+# Filter out the correct time period
+nypd_shooting2 %>% 
+filter(month(OCCUR_DATE) >= 1, month(OCCUR_DATE) <= 6, year(OCCUR_DATE) == 2015) %>% group_by(OCCUR_DATE) %>% summarize(COUNT = n()) %>% ggplot(aes(x = OCCUR_DATE, y = COUNT)) + geom_line() + geom_point() + labs(title = "Cases per Day", x = "Date", y = "Total Cases")
+```
+
+A follow-up question will be which year has the lowest total cases.
+
+
+Second plot shows a density map of perpetrator vs victim on their age groups:
+
+```{r age group density, echo=FALSE}
+# Filter out unknown, empty or na data to save in nypd_shooting4
+nypd_shooting4 <- nypd_shooting2 %>% filter(PERP_AGE_GROUP %in% c('<18', '19-24', '25-44', '45-64', '65+') & VIC_AGE_GROUP %in% c('<18', '19-24', '25-44', '45-64', '65+'))
+
+# Plotting 
+nypd_shooting4 %>% ggplot(aes(x = PERP_AGE_GROUP, y = VIC_AGE_GROUP)) + geom_bin2d(bins = 30) + scale_fill_gradient(low = "blue", high = "yellow") +  
+labs(title = "Perpetrator vs Victim Age Group Density", x = "Perpetrator Age Group", y = "Victim Age Group", fill = "Density") 
+```
+
+
+Third plot shows the percentage of black-on-black crime (both criminal and victim are black in race) among all crimes that has a recorded criminals' race in different cities.
+
+```{r visualization 2, echo=FALSE}
+# save filtered data into variable
+crime_percentage <- nypd_shooting2 %>% filter(!is.na(PERP_RACE) & PERP_RACE != "" & PERP_RACE != "(null)" & PERP_RACE != "UNKNOWN") %>%
+  
+# calculate percentage
+group_by(CITY) %>%
+summarize(total_cases = n(),
+black_cases = sum(PERP_RACE == "BLACK" & VIC_RACE == "BLACK")) %>%
+mutate(percentage = (black_cases / total_cases) * 100)
+
+# Plot
+ggplot(crime_percentage, aes(x = CITY, y = percentage, fill = CITY)) + geom_bar(stat = "identity", show.legend = FALSE)  +
+labs(title = "Black on Black Crime %", x = "City", y = "Percentage (%)")
+
+```
+A follow-up question would be to calculate the same percentage for other races too.
+
+
+## A linear model:
+
+The model shows a predicted probability vs an actual probability of the murder case based on perpetrator age groups.  
+
+```{r linear model, echo=FALSE}
+# Covert MURDER_FLAG to numerical values of 0 and 1 to a new column for modeling.
+nypd_shooting2 <- nypd_shooting2 %>% mutate(MURDER_FLAG_NUM = ifelse(MURDER_FLAG == 'true', 1, 0))
+
+# Save filtered data set based on PERP_AGE_GROUP 
+nypd_shooting3 <- nypd_shooting2 %>% filter(PERP_AGE_GROUP %in% c('<18', '18-24', '25-44', '45-64', '65+'))
+
+model <- glm(MURDER_FLAG_NUM ~ PERP_AGE_GROUP, data = nypd_shooting3, family = binomial)
+pred_probs <- predict(model, type = "response")
+plot_data <- data.frame(Actual = nypd_shooting3$MURDER_FLAG_NUM, PredictedProb = pred_probs)
+ggplot(plot_data, aes(x = PredictedProb, y = Actual)) + geom_jitter(width = 0.02, height = 0.02, alpha = 0.5, color = "blue") + labs(x = "Predicted Probability", y = "Actual Outcome", title = "Predicted Probability vs Actual Outcome") + theme_minimal()
+```
+
+
+
+## Conclusion and bias
+
+On the first visualization, the maximum crimes committed in a single day from the period of January to June in 2015 is more than 10 (14 actually) whereas the minimum is as low as 1. While on the second graph, the area that has the most black-on-black crime percentage is in Brooklyn despite looking at the demographic distribution in each area.
+
+One bias can come from collecting the data where missing values are presented, for example, under PERP_RACE column, large amount of empty entries, unknown values and null values are found (12288 cases) which will affect the accuracy of the second analysis. Such cases can be filtered out before working out the percentage.
+
+Bias can also come from failing to check the validity of the data that involves using outliers in analysis, for example, after summing the cases for each date, one or more outrageously large data is not detected. Such bias can be mitigated during the cleaning process by looking at a summary of the data, for example, on a max. or min. value.
+
+Another rather significant bias in this particular analysis could come from the person who is doing the analysis assumes a certain ethnicity or age group commits more crimes than othesrs which may lead to the person overfitting the result to his or her desired output. Current analysis is not affected by such bias as it is solely based on data itself. 
+
+Session Information:
+```{r session info}
+sessionInfo()
+```
